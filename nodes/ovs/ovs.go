@@ -12,6 +12,7 @@ import (
 	goOvs "github.com/digitalocean/go-openvswitch/ovs"
 	log "github.com/sirupsen/logrus"
 	cExec "github.com/srl-labs/containerlab/clab/exec"
+	"github.com/srl-labs/containerlab/internal/slices"
 	"github.com/srl-labs/containerlab/links"
 	"github.com/srl-labs/containerlab/nodes"
 	"github.com/srl-labs/containerlab/nodes/state"
@@ -54,7 +55,14 @@ func (n *ovs) CheckDeploymentConditions(_ context.Context) error {
 		goOvs.Sudo(),
 	)
 
-	if _, err := c.VSwitch.Get.Bridge(n.Cfg.ShortName); err != nil {
+	// We were previously doing c.VSwitch.Get.Bridge() but it doesn't work
+	// when the bridge has a propotocol version higher than 1.0
+	// So listing the bridges is safer
+	bridges, err := c.VSwitch.ListBridges()
+	if err != nil {
+		return fmt.Errorf("error while looking for ovs bridge %q: %v", n.Cfg.ShortName, err)
+	}
+	if !slices.Contains(bridges, n.Cfg.ShortName) {
 		return fmt.Errorf("could not find ovs bridge %q", n.Cfg.ShortName)
 	}
 
@@ -68,8 +76,24 @@ func (n *ovs) Deploy(_ context.Context, _ *nodes.DeployParams) error {
 
 func (*ovs) PullImage(_ context.Context) error             { return nil }
 func (*ovs) GetImages(_ context.Context) map[string]string { return map[string]string{} }
-func (*ovs) Delete(_ context.Context) error                { return nil }
-func (*ovs) DeleteNetnsSymlink() (err error)               { return nil }
+
+func (n *ovs) Delete(_ context.Context) error {
+	c := goOvs.New(
+		// Prepend "sudo" to all commands.
+		goOvs.Sudo(),
+	)
+
+	for _, ep := range n.GetEndpoints() {
+		// Under the hood, this is called with "--if-exists", so it will handle the case where it doesn't exist for some reason.
+		if err := c.VSwitch.DeletePort(n.Cfg.ShortName, ep.GetIfaceName()); err != nil {
+			log.Errorf("Could not remove OVS port %q from bridge %q", ep.GetIfaceName(), n.Config().ShortName)
+		}
+	}
+
+	return nil
+}
+
+func (*ovs) DeleteNetnsSymlink() (err error) { return nil }
 
 // UpdateConfigWithRuntimeInfo is a noop for bridges.
 func (*ovs) UpdateConfigWithRuntimeInfo(_ context.Context) error { return nil }
